@@ -1,46 +1,74 @@
-import requests
+import asyncio
+import aiohttp
 import fake_useragent
 from bs4 import BeautifulSoup
+from collections import defaultdict
 
-while True:
-    try:
-        #получение правильного имени героя 
-        wrong_hero = input('Введите имя нужного героя:   ').strip()
-        correct_hero = '-'.join(wrong_hero.strip().lower().split())
+async def fetch_counters(session, hero, all_counters):
+    user = fake_useragent.UserAgent().random
+    headers = {'user-agent': user}
+    url = f'https://ru.dotabuff.com/heroes/{hero}/counters'
 
-        #ссылка на страницу
-        link = f'https://ru.dotabuff.com/heroes/{correct_hero}/counters'
-        #создание фейкового юзер агента
-        user = fake_useragent.UserAgent().random
+    async with session.get(url, headers=headers) as response:
+        if response.status == 404:
+            print(f'Некорректное имя героя: {hero}')
+            return
 
-        #хедер с фейковым юзер агентом
-        header = {
-            'user-agent': user
-        }
+        text = await response.text()
+        soup = BeautifulSoup(text, 'lxml')
+        table = soup.find('table', class_='sortable')
+        if not table:
+            print(f'Не найдена таблица контрпиков для {hero}')
+            return
+        
+        tbody = table.find('tbody')
+        rows = tbody.find_all('tr')
+        
+        print(f'\nКонтрпики для {hero.capitalize()}:')
+        for row in rows:
+            tds = row.find_all('td')
+            if len(tds) >= 3:
+                name = tds[1].text.strip()
+                opposition_str = tds[2].text.strip().replace('%', '').replace(',', '')
+                try:
+                    opposition = float(opposition_str)
+                    if opposition > 0:
+                        print(f'{name}: {opposition}%')
+                        all_counters[name][hero] = opposition
+                except ValueError:
+                    continue
+        print()
 
-        #запрос на код страницы
-        response = requests.get(link, headers = header)
+async def main():
+    while True:
+        try:
+            wrong_heroes = input('Введите имена нужных героев: ').strip().split(',')
+            correct_heroes = ['-'.join(hero.lower().split()) for hero in wrong_heroes]
 
-        #обработка ошибки 404(сервер не отвечает или не найден)
-        if response.status_code == 404:
-            print('Некорректное имя героя, введите правильное')
-        else:
-            #переменная которая хранит код страницы тексом
-            soup = BeautifulSoup(response.text, 'lxml')
+            all_counters = defaultdict(dict)
 
-            #искать секцию
-            section = soup.find('section', class_='counter-outline')
-            #искать ВСЕ СТРОКИ
-            rows = section.find_all('tr')
+            async with aiohttp.ClientSession() as session:
+                tasks = [fetch_counters(session, hero, all_counters) for hero in correct_heroes]
+                await asyncio.gather(*tasks)
 
-            for row in rows[:5]:
-                #искать секции в ОДНОЙ СТРОКЕ
-                tds = row.find_all('td')
-                if len(tds) >= 3:
-                    name = tds[1].text.strip()
-                    opposition = tds[2].text.strip()
-                    print(f'{name}: {opposition}')
-                    
-    except KeyboardInterrupt:
-        print('\nПрограмма закрыта')
-        break
+            # Показать топ-5 только если больше одного героя
+            if len(correct_heroes) > 1:
+                common_counters = {
+                    hero: sum(values.values())
+                    for hero, values in all_counters.items()
+                    if len(values) == len(correct_heroes)
+                }
+
+                top_5 = sorted(common_counters.items(), key=lambda x: x[1], reverse=True)[:5]
+
+                print('\nТОП-5 контрпиков против всех выбранных героев:')
+                for name, total in top_5:
+                    avg = total / len(correct_heroes)
+                    print(f'{name}: {avg:.2f}% в среднем')
+
+        except KeyboardInterrupt:
+            print('\nПрограмма закрыта')
+            break
+
+if __name__ == '__main__':
+    asyncio.run(main())
